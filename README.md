@@ -6,7 +6,7 @@ A local Windows notebook for handwriting, drawing, and editing PDFs. No account 
 
 ## Install
 
-Download `Clawdenote-Setup-1.0.1.exe` from the [latest release](https://github.com/Ruibuckets/Clawdenote/releases/latest), run it, and choose an installation folder. Launch Clawdenote from the desktop or Start menu shortcut. The installer is for Windows x64.
+Download `Clawdenote-Setup-1.0.2.exe` from the [latest release](https://github.com/Ruibuckets/Clawdenote/releases/latest), run it, and choose an installation folder. Launch Clawdenote from the desktop or Start menu shortcut. The installer is for Windows x64.
 
 The installer is unsigned, so Windows may display an unknown-publisher or SmartScreen prompt.
 
@@ -14,6 +14,7 @@ The installer is unsigned, so Windows may display an unknown-publisher or SmartS
 
 - Blank, lined, graph, and dotted A4 paper with white, cream, or pale green tones.
 - Pen and highlighter with preset or custom colours, adjustable width, compatible pen pressure, and adjustable ink smoothing.
+- A small writing-cursor dot that follows the selected ink colour.
 - Whole-annotation eraser, undo/redo, selection and movement, pan, lines, arrows, rectangles, and ellipses.
 - Typed notes and local image insertion.
 - Add, duplicate, reorder, and delete pages; append PDF pages to a notebook.
