@@ -6,14 +6,14 @@ A local Windows notebook for handwriting, drawing, and editing PDFs. No account 
 
 ## Install
 
-Download `Clawdenote-Setup-1.0.0.exe` from the [latest release](https://github.com/Ruibuckets/Clawdenote/releases/latest), run it, and choose an installation folder. Launch Clawdenote from the desktop or Start menu shortcut. The installer is for Windows x64.
+Download `Clawdenote-Setup-1.0.1.exe` from the [latest release](https://github.com/Ruibuckets/Clawdenote/releases/latest), run it, and choose an installation folder. Launch Clawdenote from the desktop or Start menu shortcut. The installer is for Windows x64.
 
-The v1.0.0 installer is unsigned, so Windows may display an unknown-publisher or SmartScreen prompt.
+The installer is unsigned, so Windows may display an unknown-publisher or SmartScreen prompt.
 
 ## Features
 
 - Blank, lined, graph, and dotted A4 paper with white, cream, or pale green tones.
-- Pen and highlighter with preset or custom colours, adjustable width, and compatible pen pressure.
+- Pen and highlighter with preset or custom colours, adjustable width, compatible pen pressure, and adjustable ink smoothing.
 - Whole-annotation eraser, undo/redo, selection and movement, pan, lines, arrows, rectangles, and ellipses.
 - Typed notes and local image insertion.
 - Add, duplicate, reorder, and delete pages; append PDF pages to a notebook.
@@ -25,6 +25,8 @@ Existing `.inkstone` notebooks can still be opened. Use **Save a copy** to save 
 ## Everyday use
 
 Choose the paper style in the right panel, then pick a tool, colour, and width. **Add page** inserts a page after the current one. The left panel switches between pages and contains page-management controls.
+
+Start with **Ink smoothing** at **55%** for steadier handwriting. Increase it to soften jitter, or lower it to preserve sharper corners and small letters. **0%** turns smoothing off. To improve an existing stroke, choose **Select & move**, click the stroke, and adjust its smoothing. Undo can restore the previous setting.
 
 **Save** keeps an editable notebook in the folder you choose. Later saves update that file; **Save a copy** chooses another destination. **Export** saves all pages to PDF, or the current page to PNG, JPEG, or SVG. Recovery offers **Restore** on the next launch when a previous working notebook is available.
 
@@ -66,4 +68,4 @@ Run `npm run test:e2e` after building to exercise the Electron workflows. The te
 
 Clawdenote is licensed under **AGPL-3.0-only**. See [LICENSE](LICENSE) and [third-party notices](THIRD_PARTY_NOTICES.txt). Application source is available in this repository and in `Clawdenote-Source.zip`, also included in the installed app's `resources` folder.
 
-The PDF engine is unmodified **MuPDF 1.28.1**, licensed under AGPL-3.0-or-later. Its matching complete source is available as `mupdf-1.28.1-source.tar.gz` with the v1.0.0 release, or from the [official source archive](https://mupdf.com/downloads/archive/mupdf-1.28.1-source.tar.gz). The source includes the C engine, JavaScript bindings, dependencies, and build scripts. Follow the [MuPDF 1.28.1 WebAssembly build instructions](https://github.com/ArtifexSoftware/mupdf/blob/1.28.1/platform/wasm/BUILDING.md) to rebuild the engine.
+The PDF engine is unmodified **MuPDF 1.28.1**, licensed under AGPL-3.0-or-later. Its matching complete source is available as `mupdf-1.28.1-source.tar.gz` with each release, or from the [official source archive](https://mupdf.com/downloads/archive/mupdf-1.28.1-source.tar.gz). The source includes the C engine, JavaScript bindings, dependencies, and build scripts. Follow the [MuPDF 1.28.1 WebAssembly build instructions](https://github.com/ArtifexSoftware/mupdf/blob/1.28.1/platform/wasm/BUILDING.md) to rebuild the engine.
