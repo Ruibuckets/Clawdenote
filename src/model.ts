@@ -12,6 +12,8 @@ export interface StrokeItem {
   color: string;
   width: number;
   points: Point[];
+  /** Stroke stabilization strength, 0 to 1. Missing values use the default. */
+  smoothing?: number;
 }
 export interface ShapeItem {
   id: string;
@@ -172,6 +174,7 @@ export function validateDocument(input: unknown): DocumentModel {
         return {
           id: itemId, type, tool: choice(item.tool, ['pen', 'highlighter'] as const, `${at} tool`),
           color: color(item.color, `${at} color`), width: number(item.width, `${at} width`, 0.1, 1000),
+          ...(item.smoothing === undefined ? {} : { smoothing: number(item.smoothing, `${at} smoothing`, 0, 1) }),
           points: item.points.map((inputPoint, pointIndex): Point => {
             const point = record(inputPoint, `${at}, point ${pointIndex + 1}`);
             return { x: number(point.x, `${at} point x`), y: number(point.y, `${at} point y`), pressure: number(point.pressure, `${at} pressure`, 0, 1) };

@@ -1,7 +1,8 @@
 import type * as MuPDF from 'mupdf';
 import type { DocumentModel, PageModel, InkItem, ImageItem } from './model';
 import { createId } from './model';
-import { pageToSvg, preloadImages, renderPage, strokeRadius } from './drawing';
+import { pageToSvg, preloadImages, renderPage } from './drawing';
+import { getStrokePath } from './ink';
 
 /** Coordinates are the notebook's 96 dpi page coordinates, independent of zoom. */
 export interface PdfTextBlock {
@@ -398,21 +399,12 @@ function drawVectorItem(mu: Engine, device: MuPDF.Device, fonts: FontSet, item: 
   const path = new mu.Path();
   try {
     if (item.type === 'stroke') {
-      for (let i = 0; i < item.points.length; i++) {
-        const point = item.points[i];
-        const radius = strokeRadius(item, point);
-        circle(path, point.x, point.y, radius);
-        if (i === 0) continue;
-        const previous = item.points[i - 1];
-        const distance = Math.hypot(point.x - previous.x, point.y - previous.y);
-        if (distance === 0) continue;
-        const nx = -(point.y - previous.y) / distance, ny = (point.x - previous.x) / distance;
-        const previousRadius = strokeRadius(item, previous);
-        path.moveTo(previous.x + nx * previousRadius, previous.y + ny * previousRadius);
-        path.lineTo(previous.x - nx * previousRadius, previous.y - ny * previousRadius);
-        path.lineTo(point.x - nx * radius, point.y - ny * radius);
-        path.lineTo(point.x + nx * radius, point.y + ny * radius);
-        path.closePath();
+      // Canvas, SVG, and PDF replay the same smoothed, pressure-aware outline.
+      for (const command of getStrokePath(item)) {
+        if (command.type === 'move') path.moveTo(command.x, command.y);
+        else if (command.type === 'line') path.lineTo(command.x, command.y);
+        else if (command.type === 'cubic') path.curveTo(command.x1, command.y1, command.x2, command.y2, command.x, command.y);
+        else path.closePath();
       }
       device.fillPath(path, false, mu.Matrix.identity, mu.ColorSpace.DeviceRGB, parseColor(item.color), item.tool === 'highlighter' ? 0.3 : 1);
     } else {

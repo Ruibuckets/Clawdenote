@@ -1,4 +1,6 @@
 import type { ImageItem, InkItem, PageModel, Point, ShapeItem, StrokeItem, TextItem } from './model';
+import { getStrokeBounds, getStrokePath, getStrokeSamples, strokeRadius } from './ink';
+export { strokeRadius } from './ink';
 
 export interface ItemBounds { x: number; y: number; w: number; h: number }
 const FONT_FAMILY = 'Segoe UI, Arial, sans-serif';
@@ -68,34 +70,13 @@ export function drawPaper(ctx: CanvasRenderingContext2D, page: PageModel): void 
   ctx.restore();
 }
 
-export function strokeRadius(stroke: StrokeItem, point: Point): number {
-  const pressure = Number.isFinite(point.pressure) ? Math.max(0, Math.min(1, point.pressure)) : 0.5;
-  return stroke.width * (stroke.tool === 'highlighter' ? 1 : 0.25 + pressure * 1.5) / 2;
-}
-
-/**
- * Circles plus tapered segments form one nonzero fill. A highlighter stroke is
- * composited once, so slow motion and crossing segments do not darken its color.
- */
-function strokePath(stroke: StrokeItem, path: Pick<CanvasRenderingContext2D, 'moveTo' | 'lineTo' | 'arc' | 'closePath'>): void {
-  for (let index = 0; index < stroke.points.length; index++) {
-    const point = stroke.points[index];
-    const radius = strokeRadius(stroke, point);
-    path.moveTo(point.x + radius, point.y);
-    path.arc(point.x, point.y, radius, 0, Math.PI * 2);
-    path.closePath();
-    if (index === 0) continue;
-    const previous = stroke.points[index - 1];
-    const previousRadius = strokeRadius(stroke, previous);
-    const length = Math.hypot(point.x - previous.x, point.y - previous.y);
-    if (length < 0.001) continue;
-    const nx = -(point.y - previous.y) / length;
-    const ny = (point.x - previous.x) / length;
-    path.moveTo(previous.x + nx * previousRadius, previous.y + ny * previousRadius);
-    path.lineTo(previous.x - nx * previousRadius, previous.y - ny * previousRadius);
-    path.lineTo(point.x - nx * radius, point.y - ny * radius);
-    path.lineTo(point.x + nx * radius, point.y + ny * radius);
-    path.closePath();
+/** One shared ribbon path prevents differences between live ink and exported ink. */
+function strokePath(stroke: StrokeItem, path: Pick<CanvasRenderingContext2D, 'moveTo' | 'lineTo' | 'bezierCurveTo' | 'closePath'>): void {
+  for (const command of getStrokePath(stroke)) {
+    if (command.type === 'move') path.moveTo(command.x, command.y);
+    else if (command.type === 'line') path.lineTo(command.x, command.y);
+    else if (command.type === 'cubic') path.bezierCurveTo(command.x1, command.y1, command.x2, command.y2, command.x, command.y);
+    else path.closePath();
   }
 }
 
@@ -176,14 +157,7 @@ function textBounds(item: TextItem): ItemBounds {
 
 export function itemBounds(item: InkItem): ItemBounds {
   if (item.type === 'stroke') {
-    if (!item.points.length) return { x: 0, y: 0, w: 0, h: 0 };
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const point of item.points) {
-      const radius = strokeRadius(item, point);
-      minX = Math.min(minX, point.x - radius); minY = Math.min(minY, point.y - radius);
-      maxX = Math.max(maxX, point.x + radius); maxY = Math.max(maxY, point.y + radius);
-    }
-    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+    return getStrokeBounds(item);
   }
   if (item.type === 'text') return textBounds(item);
   if (item.type === 'shape' && item.shape === 'arrow') {
@@ -228,9 +202,10 @@ export function hitTest(item: InkItem, x: number, y: number, tolerance = 6): boo
   const bounds = itemBounds(item);
   if (x < bounds.x - radius || y < bounds.y - radius || x > bounds.x + bounds.w + radius || y > bounds.y + bounds.h + radius) return false;
   if (item.type === 'stroke') {
-    if (item.points.length === 1) return Math.hypot(x - item.points[0].x, y - item.points[0].y) <= radius + strokeRadius(item, item.points[0]);
-    for (let index = 1; index < item.points.length; index++) {
-      const previous = item.points[index - 1], point = item.points[index];
+    const samples = getStrokeSamples(item);
+    if (samples.length === 1) return Math.hypot(x - samples[0].x, y - samples[0].y) <= radius + strokeRadius(item, samples[0]);
+    for (let index = 1; index < samples.length; index++) {
+      const previous = samples[index - 1], point = samples[index];
       const hit = segmentDistance(x, y, previous.x, previous.y, point.x, point.y);
       const localRadius = strokeRadius(item, previous) * (1 - hit.fraction) + strokeRadius(item, point) * hit.fraction;
       if (hit.distance <= radius + localRadius) return true;
@@ -265,8 +240,8 @@ function strokeSvgPath(item: StrokeItem): string {
   const path = {
     moveTo(x: number, y: number) { commands.push(`M${n(x)} ${n(y)}`); },
     lineTo(x: number, y: number) { commands.push(`L${n(x)} ${n(y)}`); },
-    arc(x: number, y: number, radius: number) {
-      commands.push(`A${n(radius)} ${n(radius)} 0 1 1 ${n(x - radius)} ${n(y)} A${n(radius)} ${n(radius)} 0 1 1 ${n(x + radius)} ${n(y)}`);
+    bezierCurveTo(x1: number, y1: number, x2: number, y2: number, x: number, y: number) {
+      commands.push(`C${n(x1)} ${n(y1)} ${n(x2)} ${n(y2)} ${n(x)} ${n(y)}`);
     },
     closePath() { commands.push('Z'); },
   };
