@@ -427,10 +427,10 @@ test('images finishing decode repaint the cached page while writing', async () =
     canvas.width = 20; canvas.height = 20;
     const ctx = canvas.getContext('2d')!;
     ctx.fillStyle = '#ff0000'; ctx.fillRect(0, 0, 20, 20);
-    const NativeImage = window.Image;
+    const NativeImage = globalThis.Image;
     const complete = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'complete')!.get!;
     const gate = { open: false, pending: [] as (() => void)[] };
-    window.Image = function (width?: number, height?: number) {
+    globalThis.Image = function (width?: number, height?: number) {
       const image = new NativeImage(width, height);
       let loaded: ((this: GlobalEventHandlers, ev: Event) => unknown) | null = null;
       Object.defineProperty(image, 'complete', { get: () => gate.open && complete.call(image) });
