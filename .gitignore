@@ -1,0 +1,12 @@
+node_modules/
+dist/
+release/
+release-clawdenote/
+test-results/
+playwright-report/
+Clawdenote-Source.zip
+Inkstone-Source.zip
+.publication/
+.tools/
+*.inkstone-tmp-*
+*.clawdenote-tmp-*

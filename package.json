@@ -1,0 +1,87 @@
+{
+  "name": "clawdenote",
+  "version": "1.0.0",
+  "description": "A private Windows notebook for pen, paper, and PDF editing",
+  "author": "Clawdenote",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "desktop": "electron .",
+    "build": "tsc --noEmit && vite build",
+    "package": "npm run build && node scripts/package-source.mjs && electron-builder --win --x64",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@types/node": "^24.0.0",
+    "@vitejs/plugin-react": "latest",
+    "vite": "latest",
+    "typescript": "^5.9.0",
+    "electron": "latest",
+    "electron-builder": "^26.0.0",
+    "vitest": "latest",
+    "@playwright/test": "latest",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "lucide-react": "^0.468.0",
+    "mupdf": "latest",
+    "pdf-lib": "^1.17.1"
+  },
+  "build": {
+    "appId": "local.inkstone.notebook",
+    "productName": "Clawdenote",
+    "directories": {
+      "output": "release-clawdenote"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "build/icon.png",
+      "package.json",
+      "LICENSE"
+    ],
+    "extraResources": [
+      {
+        "from": "Clawdenote-Source.zip",
+        "to": "Clawdenote-Source.zip"
+      },
+      {
+        "from": "README.md",
+        "to": "README.md"
+      },
+      {
+        "from": "THIRD_PARTY_NOTICES.txt",
+        "to": "THIRD_PARTY_NOTICES.txt"
+      }
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "signExecutable": false
+    },
+    "nsis": {
+      "useZip": true,
+      "differentialPackage": false,
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "artifactName": "Clawdenote-Setup-${version}.${ext}"
+    },
+    "compression": "normal"
+  }
+}
