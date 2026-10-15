@@ -10,3 +10,4 @@ Inkstone-Source.zip
 .tools/
 *.inkstone-tmp-*
 *.clawdenote-tmp-*
+tmp/

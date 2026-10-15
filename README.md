@@ -1,35 +1,41 @@
 # Clawdenote
 
-A local Windows notebook for handwriting, drawing, and editing PDFs. No account or cloud service is required. Your notebooks, recovery files, and exports stay on your computer.
+A local Windows notebook for handwriting, drawing, and editing PDFs. No account or cloud service is required. Your notebook library and exports stay on your computer.
 
 ![Clawdenote with graph paper, drawing tools, and page thumbnails](docs/preview.png)
 
 ## Install
 
-Download `Clawdenote-Setup-1.0.2.exe` from the [latest release](https://github.com/Ruibuckets/Clawdenote/releases/latest), run it, and choose an installation folder. Launch Clawdenote from the desktop or Start menu shortcut. The installer is for Windows x64.
+Download `Clawdenote-Setup-1.1.0.exe` from the [latest release](https://github.com/Ruibuckets/Clawdenote/releases/latest), run it, and choose an installation folder. Launch Clawdenote from the desktop or Start menu shortcut. The installer is for Windows x64.
 
 The installer is unsigned, so Windows may display an unknown-publisher or SmartScreen prompt.
 
 ## Features
 
+- Home library with recent notebooks, search, rename, and recoverable deletion.
+- Automatic local saving, plus editable notebook copies in a folder you choose.
 - Blank, lined, graph, and dotted A4 paper with white, cream, or pale green tones.
 - Pen and highlighter with preset or custom colours, adjustable width, compatible pen pressure, and adjustable ink smoothing.
 - A small writing-cursor dot that follows the selected ink colour.
-- Whole-annotation eraser, undo/redo, selection and movement, pan, lines, arrows, rectangles, and ellipses.
+- Adjustable round eraser, lasso selection and group movement, undo/redo, pan, lines, arrows, rectangles, and ellipses.
 - Typed notes and local image insertion.
 - Add, duplicate, reorder, and delete pages; append PDF pages to a notebook.
 - Open PDFs, annotate them, and replace existing horizontal text lines.
-- Editable `.clawdenote` notebooks, local recovery, Windows printing, and exports to PDF, PNG, JPEG, or SVG.
+- Editable `.clawdenote` notebooks, Windows printing, and exports to PDF, PNG, JPEG, or SVG.
 
 Existing `.inkstone` notebooks can still be opened. Use **Save a copy** to save one with the `.clawdenote` extension.
 
 ## Everyday use
 
+On Home, choose **New notebook**, open a recent notebook, or **Import notebook or PDF**. Search finds notebooks by name. Rename a notebook from its card; deleted notebooks remain under **Deleted notes** until you restore them. Imported files are copied into the library and their originals are preserved.
+
 Choose the paper style in the right panel, then pick a tool, colour, and width. **Add page** inserts a page after the current one. The left panel switches between pages and contains page-management controls.
 
 Start with **Ink smoothing** at **55%** for steadier handwriting. Increase it to soften jitter, or lower it to preserve sharper corners and small letters. **0%** turns smoothing off. To improve an existing stroke, choose **Select & move**, click the stroke, and adjust its smoothing. Undo can restore the previous setting.
 
-**Save** keeps an editable notebook in the folder you choose. Later saves update that file; **Save a copy** chooses another destination. **Export** saves all pages to PDF, or the current page to PNG, JPEG, or SVG. Recovery offers **Restore** on the next launch when a previous working notebook is available.
+Edits save automatically to your local library. **Save** saves pending edits immediately; **Home** and normal app closing also finish saving. **Save a copy** writes an editable `.clawdenote` file to your chosen folder for backup or use on another computer. **Export** saves all pages to PDF, or the current page to PNG, JPEG, or SVG. Working notebooks from the older recovery system are imported into the library automatically.
+
+Choose **Lasso select**, draw around the ink you want, then drag the selection to move it. A lasso can move part of a stroke while leaving the rest in place. The round **Eraser** removes ink under its brush; adjust **Eraser size** separately from pen width. Press **E** to switch between the eraser and your previous pen or highlighter. Undo restores an eraser gesture or a lasso move in one step.
 
 For existing PDF text, choose **Edit PDF text**, click an outlined line, enter the replacement, and select **Apply replacement**. The old text is removed from the edited page. A duplicated PDF page can be edited independently.
 
@@ -38,8 +44,8 @@ For existing PDF text, choose **Edit PDF text**, click an outlined line, enter t
 | Undo / redo | Ctrl+Z / Ctrl+Shift+Z |
 | Save / save a copy | Ctrl+S / Ctrl+Shift+S |
 | Open / print | Ctrl+O / Ctrl+P |
-| Pen / highlighter / eraser | P / H / E |
-| Select / text / line | V / T / L |
+| Pen / highlighter / toggle eraser | P / H / E |
+| Select / lasso / text / line | V / Q / T / L |
 | Pan temporarily | Hold Space and drag |
 | Delete selected annotation | Delete |
 
@@ -48,7 +54,7 @@ For existing PDF text, choose **Edit PDF text**, click an outlined line, enter t
 - Physical pen/tablet hardware has not been tested. Pressure and pen-only touch filtering depend on compatible Windows Ink input and your device driver. Mouse drawing and the notebook/PDF workflows have been tested in Electron.
 - Scanned PDFs have no selectable text layer; OCR is not included. Rotated or vertical text cannot be replaced. Edit one horizontal line at a time; longer replacements may shrink to fit, and font appearance can change.
 - Password-protected PDFs need an unlocked copy. PDF editing restrictions are respected.
-- The eraser removes whole annotations. SVG exports embed imported PDF backgrounds as images; PDF exports preserve searchable text. Check exported pages before sharing them.
+- SVG exports embed imported PDF backgrounds as images; PDF exports preserve searchable text. Check exported pages before sharing them.
 
 ## Build from source
 
@@ -63,7 +69,7 @@ npm run desktop
 
 Rebuild after changing the source. `npm run package` builds the Windows installer in `release-clawdenote/` and automatically creates `Clawdenote-Source.zip`.
 
-Run `npm run test:e2e` after building to exercise the Electron workflows. The tests use isolated user data and temporary documents. The [Windows build workflow](.github/workflows/windows-build.yml) installs locked dependencies, builds, runs unit tests, packages the app, and uploads downloadable build artifacts. Releases are published separately.
+Run `npm run test:e2e` after building to exercise the Electron workflows. The tests use isolated user data and temporary documents, including a separate folder for legacy notebook migration. The [Windows build workflow](.github/workflows/windows-build.yml) installs locked dependencies, builds, runs unit tests, packages the app, and uploads downloadable build artifacts. Releases are published separately.
 
 ## License and source
 
