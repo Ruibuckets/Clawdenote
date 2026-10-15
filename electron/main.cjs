@@ -93,7 +93,7 @@ register('document:confirm-close', async () => {
 ipcMain.on('document:close-ready', event => {localSender(event); closing=true; win.close();});
 function createWindow() {
   closing = false;
-  const window = new BrowserWindow({width:1440,height:1000,minWidth:1000,minHeight:700,title:'Clawdenote',icon:path.join(__dirname,'../build/icon.png'),backgroundColor:'#f4f3ee',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
+  const window = new BrowserWindow({width:1440,height:1000,minWidth:520,minHeight:520,title:'Clawdenote',icon:path.join(__dirname,'../build/icon.png'),backgroundColor:'#f4f3ee',webPreferences:{preload:path.join(__dirname,'preload.cjs'),nodeIntegration:false,contextIsolation:true,sandbox:true}});
   win = window;
   window.webContents.setWindowOpenHandler(() => ({action:'deny'}));
   window.webContents.on('will-navigate',(event,url) => { if(!url.startsWith('file://') && !url.startsWith('http://127.0.0.1:5173/')) event.preventDefault(); });
