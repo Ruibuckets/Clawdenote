@@ -1,5 +1,5 @@
 import { test, expect, _electron, type ElectronApplication, type Page } from '@playwright/test';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -13,18 +13,22 @@ const projectRoot = fileURLToPath(new URL('../', import.meta.url));
 let application: ElectronApplication;
 let window: Page;
 let temporaryDirectory: string;
+let userDataDirectory: string;
 let pageErrors: string[];
 
 test.beforeEach(async () => {
   temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'clawdenote-workflow-'));
+  userDataDirectory = path.join(temporaryDirectory, 'user-data');
+  await mkdir(path.join(temporaryDirectory, 'Documents'), { recursive: true });
   pageErrors = [];
   await launchApplication();
 });
 
-async function launchApplication() {
+async function launchApplication(startNotebook = true) {
   const environment = Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined)) as Record<string, string>;
-  environment.INKSTONE_USER_DATA = path.join(temporaryDirectory, 'user-data');
+  environment.INKSTONE_USER_DATA = userDataDirectory;
   environment.CLAWDENOTE_USER_DATA = environment.INKSTONE_USER_DATA;
+  environment.CLAWDENOTE_LIBRARY_DOCUMENTS = path.join(temporaryDirectory, 'Documents');
   delete environment.ELECTRON_RUN_AS_NODE;
   const packagedExecutable = process.env.INKSTONE_TEST_EXECUTABLE;
   application = await _electron.launch({
@@ -35,8 +39,14 @@ async function launchApplication() {
   });
   window = await application.firstWindow();
   window.on('pageerror', error => pageErrors.push(error.message));
-  await expect(window.getByTestId('drawing-surface')).toBeVisible();
   await expect(window).toHaveTitle(/^Clawdenote/);
+  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].focus());
+  await expect.poll(() => window.evaluate(() => document.hasFocus())).toBe(true);
+  await expect(window.getByRole('button', { name: 'New notebook', exact: true })).toBeVisible();
+  if (startNotebook) {
+    await window.getByRole('button', { name: 'New notebook', exact: true }).click();
+    await expect(window.getByTestId('drawing-surface')).toBeVisible();
+  }
 }
 
 test.afterEach(async () => {
@@ -58,11 +68,34 @@ async function chooseFiles(files: { open?: string; save?: string }) {
   }, files);
 }
 
-async function saveNotebook(name = 'notebook.clawdenote', saveAs = false): Promise<DocumentModel> {
+async function goHome() {
+  await window.getByRole('button', { name: 'Home', exact: true }).click();
+  await expect(window.getByRole('button', { name: 'All notebooks', exact: true })).toBeVisible();
+}
+
+async function openLibraryNotebook(title: string) {
+  await window.getByRole('button', { name: `Open notebook: ${title}`, exact: true }).click();
+  await expect(window.getByLabel('Notebook name', { exact: true })).toHaveValue(title);
+  await expect(window.getByTestId('drawing-surface')).toBeVisible();
+}
+
+async function stopApplication() {
+  await application.evaluate(({ app }) => app.exit(0)).catch(() => {});
+  await application.close().catch(() => {});
+}
+
+async function closeApplicationNormally() {
+  const closed = application.waitForEvent('close', { timeout: 15_000 });
+  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close()).catch(() => {});
+  await closed;
+  await application.close().catch(() => {});
+}
+
+async function saveNotebook(name = 'notebook.clawdenote'): Promise<DocumentModel> {
   const destination = path.join(temporaryDirectory, name);
   const previousModified = await stat(destination).then(file => file.mtimeMs).catch(() => 0);
   await chooseFiles({ save: destination });
-  await window.getByRole('button', { name: saveAs ? 'Save a copy…' : 'Save notebook', exact: true }).click();
+  await window.getByRole('button', { name: 'Save a copy…', exact: true }).click();
   await expect.poll(async () => {
     try { return (await stat(destination)).mtimeMs; } catch { return 0; }
   }).toBeGreaterThan(previousModified);
@@ -163,7 +196,7 @@ test('drawing, erasing, page operations, native save/reopen, and exports preserv
   await writeFile(legacyPath, JSON.stringify(complete));
   await chooseFiles({ open: legacyPath });
   await window.getByRole('button', { name: 'Open', exact: true }).click();
-  const migrated = await saveNotebook('legacy-migrated.clawdenote', true);
+  const migrated = await saveNotebook('legacy-migrated.clawdenote');
   expect(migrated.pages).toEqual(complete.pages);
   expect(pageErrors).toEqual([]);
 });
@@ -204,36 +237,227 @@ test('existing PDF text is replaced in the exported document and survives notebo
   expect(pageErrors).toEqual([]);
 });
 
-test('recovery survives interruption, delayed restore, and closing the unresolved recovery prompt', async () => {
-  await window.getByLabel('Notebook name', { exact: true }).fill('Recovery check');
+test('library autosave survives restart and normal close flushes a pending edit without a file dialog', async () => {
+  await window.getByLabel('Notebook name', { exact: true }).fill('Durable draft');
   await window.getByRole('button', { name: 'Graph paper', exact: true }).click();
   await dragOnPage();
-  const recoveryFile = path.join(temporaryDirectory, 'user-data', 'recovery.inkstone');
-  await expect.poll(async () => {
-    try { return (JSON.parse(await readFile(recoveryFile, 'utf8')) as DocumentModel).pages[0].items.length; }
-    catch { return 0; }
-  }).toBe(1);
-  const recovered = JSON.parse(await readFile(recoveryFile, 'utf8')) as DocumentModel;
-  await application.evaluate(({ app }) => app.exit(0)).catch(() => {});
-  await application.close().catch(() => {});
-  await launchApplication();
-  await expect(window.getByRole('button', { name: 'Restore', exact: true })).toBeVisible();
-  // Wait beyond the 900 ms autosave delay to detect startup overwrites.
-  await window.waitForTimeout(1_200);
-  expect((JSON.parse(await readFile(recoveryFile, 'utf8')) as DocumentModel).id).toBe(recovered.id);
-  const closed = application.waitForEvent('close', { timeout: 15_000 });
-  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close()).catch(() => {});
-  await closed;
-  await application.close().catch(() => {});
-  expect((JSON.parse(await readFile(recoveryFile, 'utf8')) as DocumentModel).id).toBe(recovered.id);
-  await launchApplication();
-  await expect(window.getByRole('button', { name: 'Restore', exact: true })).toBeVisible();
-  await window.getByRole('button', { name: 'Restore', exact: true }).click();
+  await expect(window.locator('.save-indicator')).toHaveText('Saved to your library');
+  await stopApplication();
+  await launchApplication(false);
+  await openLibraryNotebook('Durable draft');
+  const saved = await saveNotebook('durable.clawdenote');
+  expect(saved.pages[0].paper).toBe('graph');
+  expect(saved.pages[0].items).toHaveLength(1);
+  await window.getByLabel('Notebook name', { exact: true }).fill('Pending close saved');
+  await application.evaluate(({ dialog }) => {
+    dialog.showSaveDialog = async () => { throw new Error('Managed Save must not ask for a file location'); };
+    dialog.showMessageBox = async () => { throw new Error('A managed note must close without a save prompt'); };
+  });
+  await window.getByRole('button', { name: 'Save notebook', exact: true }).click();
+  await expect(window.locator('.save-indicator')).toHaveText('Saved to your library');
+  await dragOnPage({ x: 340, y: 180 }, { x: 470, y: 220 });
+  await expect(window.locator('.save-indicator')).toHaveText('Saving…');
+  await closeApplicationNormally();
+  await launchApplication(false);
+  await openLibraryNotebook('Pending close saved');
   const restored = await saveNotebook('restored.clawdenote');
-  expect(restored.id).toBe(recovered.id);
-  expect(restored.title).toBe('Recovery check');
-  expect(restored.pages[0].paper).toBe('graph');
-  expect(restored.pages[0].items).toEqual(recovered.pages[0].items);
+  expect(restored.pages[0].items).toHaveLength(2);
+  expect(restored.pages[0].items[0]).toEqual(saved.pages[0].items[0]);
+  expect(pageErrors).toEqual([]);
+});
+
+test('meaningful legacy recovery is imported once and its original file is preserved', async () => {
+  await window.getByLabel('Notebook name', { exact: true }).fill('Legacy recovery lesson');
+  await dragOnPage();
+  const legacy = await saveNotebook('legacy-source.clawdenote');
+  await stopApplication();
+  userDataDirectory = path.join(temporaryDirectory, 'legacy-profile');
+  await mkdir(userDataDirectory, { recursive: true });
+  const recoveryFile = path.join(userDataDirectory, 'recovery.inkstone');
+  const original = JSON.stringify(legacy);
+  await writeFile(recoveryFile, original);
+  await launchApplication(false);
+  await expect(window.getByRole('button', { name: 'Open notebook: Legacy recovery lesson', exact: true })).toHaveCount(1);
+  await openLibraryNotebook('Legacy recovery lesson');
+  const recovered = await saveNotebook('recovered.clawdenote');
+  expect(recovered.pages).toEqual(legacy.pages);
+  expect(await readFile(recoveryFile, 'utf8')).toBe(original);
+  await closeApplicationNormally();
+  await launchApplication(false);
+  await expect(window.getByRole('button', { name: 'Open notebook: Legacy recovery lesson', exact: true })).toHaveCount(1);
+  expect(await readFile(recoveryFile, 'utf8')).toBe(original);
+  expect(pageErrors).toEqual([]);
+});
+
+test('Home manages recent notes, search, rename, deletion, restoration, and deduplicated imports', async ({}, testInfo) => {
+  await window.getByLabel('Notebook name', { exact: true }).fill('Algebra');
+  await dragOnPage();
+  await goHome();
+  await expect(window.getByRole('button', { name: 'Open notebook: Algebra', exact: true })).toBeVisible();
+  await window.getByRole('button', { name: 'New notebook', exact: true }).click();
+  await window.getByLabel('Notebook name', { exact: true }).fill('Biology');
+  await goHome();
+  const noteButtons = () => window.getByRole('button', { name: /^Open notebook:/ });
+  await expect(noteButtons()).toHaveCount(2);
+  expect(await noteButtons().first().getAttribute('aria-label')).toBe('Open notebook: Biology');
+  await openLibraryNotebook('Algebra');
+  await dragOnPage({ x: 330, y: 180 }, { x: 470, y: 220 });
+  await goHome();
+  expect(await noteButtons().first().getAttribute('aria-label')).toBe('Open notebook: Algebra');
+  await window.getByLabel('Search notebooks', { exact: true }).fill('biol');
+  await expect(noteButtons()).toHaveCount(1);
+  await expect(window.getByRole('button', { name: 'Open notebook: Biology', exact: true })).toBeVisible();
+  await window.getByLabel('Search notebooks', { exact: true }).fill('');
+  await window.getByRole('button', { name: 'Rename notebook: Biology', exact: true }).click();
+  const rename = window.getByRole('dialog', { name: 'Rename notebook', exact: true });
+  await rename.getByLabel('Notebook name', { exact: true }).fill('Biology notes');
+  await rename.getByRole('button', { name: 'Rename notebook', exact: true }).click();
+  await expect(window.getByRole('button', { name: 'Open notebook: Biology notes', exact: true })).toBeVisible();
+  await window.getByRole('button', { name: 'Delete notebook: Algebra', exact: true }).click();
+  await window.getByRole('dialog', { name: 'Delete notebook?', exact: true }).getByRole('button', { name: 'Delete notebook', exact: true }).click();
+  await expect(noteButtons()).toHaveCount(1);
+  await window.getByRole('button', { name: 'Deleted notes', exact: true }).click();
+  await window.getByRole('button', { name: 'Restore notebook: Algebra', exact: true }).click();
+  await window.getByRole('button', { name: 'All notebooks', exact: true }).click();
+  await expect(noteButtons()).toHaveCount(2);
+  await openLibraryNotebook('Algebra');
+  const algebra = await saveNotebook('algebra.clawdenote');
+  expect(algebra.pages[0].items).toHaveLength(2);
+  const imported = structuredClone(algebra);
+  imported.id = crypto.randomUUID();
+  imported.title = 'Imported lab';
+  const sourceText = JSON.stringify(imported);
+  const sourcePath = path.join(temporaryDirectory, 'external.clawdenote');
+  await writeFile(sourcePath, sourceText);
+  await goHome();
+  await chooseFiles({ open: sourcePath });
+  await window.getByRole('button', { name: 'Import notebook or PDF', exact: true }).click();
+  await expect(window.getByLabel('Notebook name', { exact: true })).toHaveValue('Imported lab');
+  await window.getByLabel('Notebook name', { exact: true }).fill('Imported lab revised');
+  await goHome();
+  await expect(noteButtons()).toHaveCount(3);
+  await chooseFiles({ open: sourcePath });
+  await window.getByRole('button', { name: 'Import notebook or PDF', exact: true }).click();
+  await expect(window.getByLabel('Notebook name', { exact: true })).toHaveValue('Imported lab revised');
+  await goHome();
+  await expect(noteButtons()).toHaveCount(3);
+  expect(await readFile(sourcePath, 'utf8')).toBe(sourceText);
+  const dismiss = window.getByRole('button', { name: 'Dismiss notification', exact: true });
+  if (await dismiss.isVisible()) await dismiss.click();
+  await window.screenshot({ path: testInfo.outputPath('Clawdenote-home.png') });
+  expect(pageErrors).toEqual([]);
+});
+
+test('round area erasing and lasso group movement preserve untouched ink and undo atomically', async ({}, testInfo) => {
+  await dragOnPage({ x: 100, y: 200 }, { x: 500, y: 200 });
+  const originalLine = await saveNotebook('lasso.clawdenote');
+  await window.getByRole('button', { name: 'Highlighter', exact: true }).click();
+  await window.keyboard.press('e');
+  await expect(window.getByRole('button', { name: 'Eraser', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await window.keyboard.press('e');
+  await expect(window.getByRole('button', { name: 'Highlighter', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await window.getByRole('button', { name: 'Pen', exact: true }).click();
+  await window.keyboard.down('e');
+  await window.keyboard.down('e');
+  await expect(window.getByRole('button', { name: 'Eraser', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await window.keyboard.up('e');
+  const surface = window.getByTestId('drawing-surface');
+  const bounds = await surface.boundingBox();
+  if (!bounds) throw new Error('Writing surface has no bounds');
+  const scale = bounds.width / 794;
+  const at = (x: number, y: number) => ({ x: bounds.x + x * scale, y: bounds.y + y * scale });
+  await window.mouse.move(at(300, 190).x, at(300, 190).y);
+  const indicator = window.getByTestId('eraser-indicator');
+  await expect(indicator).toBeVisible();
+  const brush = await indicator.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    return { width: rect.width, height: rect.height, borderRadius: getComputedStyle(element).borderRadius };
+  });
+  expect(brush.width).toBeGreaterThan(0);
+  expect(Math.abs(brush.width - brush.height)).toBeLessThan(1);
+  expect(brush.borderRadius).toBe('50%');
+  await window.mouse.down();
+  await window.mouse.move(at(300, 210).x, at(300, 210).y, { steps: 8 });
+  await window.mouse.up();
+  const erased = await saveNotebook('lasso.clawdenote');
+  const fragments = erased.pages[0].items.filter((item): item is StrokeItem => item.type === 'stroke');
+  expect(fragments).toHaveLength(2);
+  expect(fragments.some(stroke => stroke.points.some(point => Math.abs(point.x - 100) < 1))).toBe(true);
+  expect(fragments.some(stroke => stroke.points.some(point => Math.abs(point.x - 500) < 1))).toBe(true);
+  expect(fragments.every(stroke => stroke.points.every(point => Math.abs(point.x - 300) > 4))).toBe(true);
+  const dismissNotification = window.getByRole('button', { name: 'Dismiss notification', exact: true });
+  if (await dismissNotification.isVisible()) await dismissNotification.click();
+  await window.mouse.move(at(300, 200).x, at(300, 200).y);
+  await expect(indicator).toBeVisible();
+  await window.screenshot({ path: testInfo.outputPath('Clawdenote-round-eraser.png') });
+  await window.getByRole('button', { name: 'Undo', exact: true }).click();
+  expect((await saveNotebook('lasso.clawdenote')).pages[0].items).toEqual(originalLine.pages[0].items);
+  await window.keyboard.press('e');
+  await expect(window.getByRole('button', { name: 'Pen', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await dragOnPage({ x: 260, y: 260 }, { x: 330, y: 270 });
+  await dragOnPage({ x: 270, y: 300 }, { x: 330, y: 310 });
+  await dragOnPage({ x: 600, y: 180 }, { x: 650, y: 220 });
+  const before = await saveNotebook('lasso.clawdenote');
+  const untouched = before.pages[0].items.at(-1)!;
+  const circle = Array.from({ length: 25 }, (_, index) => ({
+    x: 300 + 110 * Math.cos(index * Math.PI / 12),
+    y: 250 + 100 * Math.sin(index * Math.PI / 12),
+  }));
+  async function selectPartialStroke() {
+    await window.getByRole('button', { name: 'Lasso select', exact: true }).click();
+    await window.mouse.move(at(circle[0].x, circle[0].y).x, at(circle[0].x, circle[0].y).y);
+    await window.mouse.down();
+    for (const point of circle.slice(1)) await window.mouse.move(at(point.x, point.y).x, at(point.x, point.y).y);
+    await window.mouse.up();
+  }
+  await selectPartialStroke();
+  await window.mouse.move(at(300, 250).x, at(300, 250).y);
+  await window.mouse.down();
+  await window.mouse.move(at(420, 330).x, at(420, 330).y, { steps: 8 });
+  await window.mouse.up();
+  const moved = await saveNotebook('lasso.clawdenote');
+  const movedStrokes = moved.pages[0].items.filter((item): item is StrokeItem => item.type === 'stroke');
+  expect(movedStrokes.length).toBeGreaterThan(4);
+  expect(moved.pages[0].items.find(item => item.id === untouched.id)).toEqual(untouched);
+  expect(movedStrokes.some(stroke => stroke.points.some(point => Math.hypot(point.x - 380, point.y - 340) < 2))).toBe(true);
+  expect(movedStrokes.some(stroke => stroke.points.some(point => Math.hypot(point.x - 390, point.y - 380) < 2))).toBe(true);
+  expect(movedStrokes.some(stroke => stroke.points.some(point => Math.hypot(point.x - 100, point.y - 200) < 2))).toBe(true);
+  expect(movedStrokes.some(stroke => stroke.points.some(point => Math.hypot(point.x - 500, point.y - 200) < 2))).toBe(true);
+  expect(movedStrokes.every(stroke => stroke.points.every(point => Math.hypot(point.x - 300, point.y - 200) > 5))).toBe(true);
+  if (await dismissNotification.isVisible()) await dismissNotification.click();
+  await window.screenshot({ path: testInfo.outputPath('Clawdenote-lasso-move.png') });
+  await window.getByRole('button', { name: 'Undo', exact: true }).click();
+  expect((await saveNotebook('lasso.clawdenote')).pages[0].items).toEqual(before.pages[0].items);
+
+  // A pending partial selection must not resurrect cleared content on the next drag.
+  await selectPartialStroke();
+  await window.getByRole('button', { name: 'Clear page annotations', exact: true }).click();
+  await window.getByRole('dialog', { name: 'Clear page annotations?', exact: true }).getByRole('button', { name: 'Clear annotations', exact: true }).click();
+  expect((await saveNotebook('lasso.clawdenote')).pages[0].items).toHaveLength(0);
+  await dragOnPage({ x: 300, y: 250 }, { x: 420, y: 330 });
+  expect((await saveNotebook('lasso.clawdenote')).pages[0].items).toHaveLength(0);
+  await window.getByRole('button', { name: 'Undo', exact: true }).click();
+  expect((await saveNotebook('lasso.clawdenote')).pages[0].items).toEqual(before.pages[0].items);
+
+  // Inserting and deleting an image after a partial selection must preserve the ink.
+  await selectPartialStroke();
+  const imageBase64 = await window.evaluate(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 24; canvas.height = 24;
+    const context = canvas.getContext('2d')!;
+    context.fillStyle = '#ed6b4f'; context.fillRect(0, 0, 24, 24);
+    return canvas.toDataURL('image/png').split(',')[1];
+  });
+  const imagePath = path.join(temporaryDirectory, 'lasso-image.png');
+  await writeFile(imagePath, Buffer.from(imageBase64, 'base64'));
+  await chooseFiles({ open: imagePath });
+  await window.getByRole('button', { name: 'Insert image', exact: true }).click();
+  await expect(window.getByRole('button', { name: 'Select & move', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  const withImage = await saveNotebook('lasso.clawdenote');
+  expect(withImage.pages[0].items.filter(item => item.type === 'image')).toHaveLength(1);
+  expect(withImage.pages[0].items.filter(item => item.type !== 'image')).toEqual(before.pages[0].items);
+  await window.keyboard.press('Delete');
+  expect((await saveNotebook('lasso.clawdenote')).pages[0].items).toEqual(before.pages[0].items);
   expect(pageErrors).toEqual([]);
 });
 
@@ -320,6 +544,7 @@ test('ink smoothing reduces visible jitter, survives export, and preserves pen l
 
   // Exact shared input samples make the visual comparison independent of event timing.
   const comparison = structuredClone(captured);
+  comparison.id = crypto.randomUUID();
   const original = { ...strokes[0], width: 5, smoothing: 0 };
   comparison.title = 'Ink smoothing comparison';
   comparison.pages[0].items = [
@@ -422,6 +647,7 @@ test('ink smoothing reduces visible jitter, survives export, and preserves pen l
 
 test('images finishing decode repaint the cached page while writing', async () => {
   const fixture = await saveNotebook();
+  fixture.id = crypto.randomUUID();
   const imageUrl = await window.evaluate(() => {
     const canvas = document.createElement('canvas');
     canvas.width = 20; canvas.height = 20;
