@@ -1,5 +1,5 @@
 import type { ImageItem, InkItem, PageModel, Point, ShapeItem, StrokeItem, TextItem } from './model';
-import { getStrokeBounds, getStrokePath, getStrokeSamples, strokeRadius } from './ink';
+import { getStrokeBounds, getStrokePath, getStrokeSamples, strokeRadius, type InkPathCommand } from './ink';
 export { strokeRadius } from './ink';
 
 export interface ItemBounds { x: number; y: number; w: number; h: number }
@@ -8,6 +8,10 @@ interface CachedImage { image: HTMLImageElement; ready: Promise<HTMLImageElement
 const imageCache = new Map<string, CachedImage>();
 const imageListeners = new Set<() => void>();
 let measureContext: CanvasRenderingContext2D | null | undefined;
+// Native paths replay in the graphics engine instead of sending thousands of
+// JS canvas calls again for thumbnails, zoom changes, and completed-page paints.
+// Keys are derived geometry arrays, so appended live points invalidate naturally.
+const nativeStrokePaths = new WeakMap<readonly InkPathCommand[], Path2D>();
 
 function imageFor(dataUrl: string): CachedImage {
   const cached = imageCache.get(dataUrl);
@@ -71,12 +75,29 @@ export function drawPaper(ctx: CanvasRenderingContext2D, page: PageModel): void 
 }
 
 /** One shared ribbon path prevents differences between live ink and exported ink. */
-function strokePath(stroke: StrokeItem, path: Pick<CanvasRenderingContext2D, 'moveTo' | 'lineTo' | 'bezierCurveTo' | 'closePath'>): void {
-  for (const command of getStrokePath(stroke)) {
+function replayStrokePath(commands: readonly InkPathCommand[], path: Pick<CanvasRenderingContext2D, 'moveTo' | 'lineTo' | 'bezierCurveTo' | 'closePath'>): void {
+  for (const command of commands) {
     if (command.type === 'move') path.moveTo(command.x, command.y);
     else if (command.type === 'line') path.lineTo(command.x, command.y);
     else if (command.type === 'cubic') path.bezierCurveTo(command.x1, command.y1, command.x2, command.y2, command.x, command.y);
     else path.closePath();
+  }
+}
+
+function fillStroke(ctx: CanvasRenderingContext2D, stroke: StrokeItem): void {
+  const commands = getStrokePath(stroke);
+  if (typeof Path2D === 'function') {
+    let native = nativeStrokePaths.get(commands);
+    if (!native) {
+      native = new Path2D();
+      replayStrokePath(commands, native);
+      nativeStrokePaths.set(commands, native);
+    }
+    ctx.fill(native, 'nonzero');
+  } else {
+    // Non-browser renderers and test contexts can still replay the same vector
+    // commands; Canvas, SVG, and PDF retain one common geometry definition.
+    ctx.beginPath(); replayStrokePath(commands, ctx); ctx.fill('nonzero');
   }
 }
 
@@ -101,7 +122,7 @@ export function drawItem(ctx: CanvasRenderingContext2D, item: InkItem): void {
     if (item.points.length) {
       ctx.fillStyle = item.color;
       if (item.tool === 'highlighter') ctx.globalAlpha *= 0.3;
-      ctx.beginPath(); strokePath(item, ctx); ctx.fill('nonzero');
+      fillStroke(ctx, item);
     }
   } else if (item.type === 'shape') {
     ctx.strokeStyle = item.color; ctx.lineWidth = item.width; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
@@ -245,7 +266,7 @@ function strokeSvgPath(item: StrokeItem): string {
     },
     closePath() { commands.push('Z'); },
   };
-  strokePath(item, path);
+  replayStrokePath(getStrokePath(item), path);
   return commands.join(' ');
 }
 

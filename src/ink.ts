@@ -8,8 +8,8 @@ export interface StrokeBounds { x: number; y: number; w: number; h: number }
 
 interface Geometry {
   samples: readonly Point[];
-  path: readonly InkPathCommand[];
-  bounds: StrokeBounds;
+  path?: readonly InkPathCommand[];
+  bounds?: StrokeBounds;
 }
 interface CachedGeometry {
   points: Point[];
@@ -28,6 +28,9 @@ interface CachedGeometry {
 const cache = new WeakMap<StrokeItem, CachedGeometry>();
 const EPSILON = 0.00001;
 const FLATNESS = 0.12;
+// A long scribble may stay within a few pixels forever. Unbounded lookaround
+// would rescan its entire history for every sample and become quadratic.
+const CORNER_CONTEXT = 48;
 
 function clamp(value: number, low = 0, high = 1): number { return Math.max(low, Math.min(high, value)); }
 function smoothingFor(stroke: StrokeItem): number {
@@ -70,8 +73,10 @@ function cornersFor(points: readonly Point[], spacing: readonly number[], streng
     }
     const reach = Math.max(5 + strength * 5, spacing[i] * (1.25 + strength));
     let previous = i - 1, next = i + 1;
-    while (previous > 0 && distance(points[i], points[previous]) < reach) previous--;
-    while (next < points.length - 1 && distance(points[i], points[next]) < reach) next++;
+    const firstContext = Math.max(0, i - CORNER_CONTEXT);
+    const lastContext = Math.min(points.length - 1, i + CORNER_CONTEXT);
+    while (previous > firstContext && distance(points[i], points[previous]) < reach) previous--;
+    while (next < lastContext && distance(points[i], points[next]) < reach) next++;
     const incomingLength = distance(points[previous], points[i]);
     const outgoingLength = distance(points[i], points[next]);
     if (incomingLength < 3 || outgoingLength < 3) continue;
@@ -288,8 +293,9 @@ function geometryFor(stroke: StrokeItem): Geometry {
     previous.firstX === first?.x && previous.firstY === first?.y && previous.firstPressure === first?.pressure &&
     previous.width === stroke.width && previous.tool === stroke.tool && previous.smoothing === strength) return previous.geometry;
   const samples = smoothSamples(stroke, strength);
-  const path = outlinePath(stroke, samples);
-  const geometry = { samples, path, bounds: pathBounds(path) };
+  // Live drawing needs the path, not cubic extrema. Hit testing/selection can
+  // request exact bounds later without charging every pointer frame for them.
+  const geometry: Geometry = { samples };
   cache.set(stroke, {
     points: stroke.points, count: stroke.points.length,
     lastX: last?.x ?? NaN, lastY: last?.y ?? NaN, lastPressure: last?.pressure ?? NaN,
@@ -302,5 +308,11 @@ function geometryFor(stroke: StrokeItem): Geometry {
 /** These derived samples never replace or mutate the notebook's raw input points. */
 export function getStrokeSamples(stroke: StrokeItem): readonly Point[] { return geometryFor(stroke).samples; }
 /** Replay this path in Canvas, SVG, or MuPDF and fill once with the nonzero rule. */
-export function getStrokePath(stroke: StrokeItem): readonly InkPathCommand[] { return geometryFor(stroke).path; }
-export function getStrokeBounds(stroke: StrokeItem): StrokeBounds { return geometryFor(stroke).bounds; }
+export function getStrokePath(stroke: StrokeItem): readonly InkPathCommand[] {
+  const geometry = geometryFor(stroke);
+  return geometry.path ??= outlinePath(stroke, geometry.samples);
+}
+export function getStrokeBounds(stroke: StrokeItem): StrokeBounds {
+  const geometry = geometryFor(stroke);
+  return geometry.bounds ??= pathBounds(geometry.path ??= outlinePath(stroke, geometry.samples));
+}
