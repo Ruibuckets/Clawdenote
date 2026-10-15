@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { getStrokeBounds, getStrokePath, getStrokeSamples, strokeRadius, type InkPathCommand } from '../src/ink';
 import { drawItem, hitTest, itemBounds, itemsToSvg } from '../src/drawing';
 import type { Point, StrokeItem } from '../src/model';
@@ -153,6 +153,50 @@ describe('smooth pen geometry', () => {
     const beforeSettings = getStrokePath(ink);
     ink.smoothing = 0;
     expect(getStrokePath(ink)).not.toBe(beforeSettings);
+  });
+
+  it('bounds smoothing work for long handwriting that stays in one small area', () => {
+    const ink = stroke(Array.from({ length: 1000 }, (_, i) => point(100 + Math.sin(i * 0.07) * 2, 100 + Math.cos(i * 0.07) * 2)));
+    const hypot = vi.spyOn(Math, 'hypot');
+    let calls = 0;
+    try {
+      expect(finitePath(getStrokePath(ink))).toBe(true);
+      calls = hypot.mock.calls.length;
+    } finally { hypot.mockRestore(); }
+    // An unbounded spatial search used over a million distance evaluations for
+    // this fixture; a fixed local context keeps work proportional to samples.
+    expect(calls).toBeLessThan(200_000);
+  });
+
+  it('reuses native graphics paths across completed-stroke repaints and refreshes live edits', () => {
+    const native: { commands: InkPathCommand[] }[] = [];
+    class NativePath {
+      commands: InkPathCommand[] = [];
+      constructor() { native.push(this); }
+      moveTo(x: number, y: number) { this.commands.push({ type: 'move', x, y }); }
+      lineTo(x: number, y: number) { this.commands.push({ type: 'line', x, y }); }
+      bezierCurveTo(x1: number, y1: number, x2: number, y2: number, x: number, y: number) { this.commands.push({ type: 'cubic', x1, y1, x2, y2, x, y }); }
+      closePath() { this.commands.push({ type: 'close' }); }
+    }
+    const fills: unknown[] = [];
+    const context = {
+      globalAlpha: 1, fillStyle: '', save() {}, restore() {},
+      fill(path: unknown, rule: CanvasFillRule) { expect(rule).toBe('nonzero'); fills.push(path); },
+    };
+    const ink = stroke([point(0, 0), point(4, 2), point(8, 0)]);
+    vi.stubGlobal('Path2D', NativePath);
+    try {
+      drawItem(context as unknown as CanvasRenderingContext2D, ink);
+      drawItem(context as unknown as CanvasRenderingContext2D, ink);
+      expect(native).toHaveLength(1);
+      expect(native[0].commands).toEqual(getStrokePath(ink));
+      expect(fills).toEqual([native[0], native[0]]);
+      ink.points.push(point(12, 3));
+      drawItem(context as unknown as CanvasRenderingContext2D, ink);
+      expect(native).toHaveLength(2);
+      expect(native[1].commands).toEqual(getStrokePath(ink));
+      expect(fills[2]).toBe(native[1]);
+    } finally { vi.unstubAllGlobals(); }
   });
 
   it('replays exactly the shared path and composites a highlighter only once', () => {

@@ -1,5 +1,5 @@
 import { test, expect, _electron, type ElectronApplication, type Page } from '@playwright/test';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -15,6 +15,33 @@ let window: Page;
 let temporaryDirectory: string;
 let userDataDirectory: string;
 let pageErrors: string[];
+let writingPointer: Awaited<ReturnType<typeof createWritingPointer>>;
+
+async function createWritingPointer(page: Page) {
+  // A separate pen pointer avoids mixing the laptop's real mouse/tablet hover
+  // events into the synthetic strokes. UI controls still use normal clicks.
+  const session = await page.context().newCDPSession(page);
+  let position = { x: 0, y: 0 };
+  let pressed = false;
+  async function move(x: number, y: number, options: { steps?: number } = {}) {
+    const from = position, steps = options.steps || 1;
+    for (let step = 1; step <= steps; step++) {
+      const next = { x: from.x + (x - from.x) * step / steps, y: from.y + (y - from.y) * step / steps };
+      await session.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...next, pointerType: 'pen', button: pressed ? 'left' : 'none', buttons: pressed ? 1 : 0, force: pressed ? 0.5 : 0 });
+    }
+    position = { x, y };
+  }
+  async function down() {
+    await session.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...position, pointerType: 'pen', button: 'left', buttons: 1, clickCount: 1, force: 0.5 });
+    pressed = true;
+  }
+  async function up() {
+    await session.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...position, pointerType: 'pen', button: 'left', buttons: 0, clickCount: 1, force: 0 });
+    pressed = false;
+  }
+  async function click(x: number, y: number) { await move(x, y); await down(); await up(); }
+  return { move, down, up, click };
+}
 
 test.beforeEach(async () => {
   temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'clawdenote-workflow-'));
@@ -38,6 +65,7 @@ async function launchApplication(startNotebook = true) {
     env: environment,
   });
   window = await application.firstWindow();
+  writingPointer = await createWritingPointer(window);
   window.on('pageerror', error => pageErrors.push(error.message));
   await expect(window).toHaveTitle(/^Clawdenote/);
   await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].focus());
@@ -46,6 +74,7 @@ async function launchApplication(startNotebook = true) {
   if (startNotebook) {
     await window.getByRole('button', { name: 'New notebook', exact: true }).click();
     await expect(window.getByTestId('drawing-surface')).toBeVisible();
+    await window.getByRole('button', { name: 'Fit page', exact: true }).click();
   }
 }
 
@@ -77,6 +106,7 @@ async function openLibraryNotebook(title: string) {
   await window.getByRole('button', { name: `Open notebook: ${title}`, exact: true }).click();
   await expect(window.getByLabel('Notebook name', { exact: true })).toHaveValue(title);
   await expect(window.getByTestId('drawing-surface')).toBeVisible();
+  await window.getByRole('button', { name: 'Fit page', exact: true }).click();
 }
 
 async function stopApplication() {
@@ -109,10 +139,10 @@ async function dragOnPage(from = { x: 100, y: 180 }, to = { x: 260, y: 220 }) {
   if (!bounds) throw new Error('Drawing surface has no bounds');
   // Points are in the model's A4 coordinate system, independent of zoom.
   const scale = bounds.width / 794;
-  await window.mouse.move(bounds.x + from.x * scale, bounds.y + from.y * scale);
-  await window.mouse.down();
-  await window.mouse.move(bounds.x + to.x * scale, bounds.y + to.y * scale, { steps: 16 });
-  await window.mouse.up();
+  await writingPointer.move(bounds.x + from.x * scale, bounds.y + from.y * scale);
+  await writingPointer.down();
+  await writingPointer.move(bounds.x + to.x * scale, bounds.y + to.y * scale, { steps: 16 });
+  await writingPointer.up();
 }
 
 async function exportTo(format: string, filename: string) {
@@ -201,6 +231,49 @@ test('drawing, erasing, page operations, native save/reopen, and exports preserv
   expect(pageErrors).toEqual([]);
 });
 
+test('unexpected capture loss keeps drawn ink while explicit pointer cancellation rolls it back', async () => {
+  await window.evaluate(() => {
+    const surface = document.querySelector<HTMLCanvasElement>('[data-testid=drawing-surface]')!;
+    const capture = { pointerId: -1, lost: false };
+    surface.addEventListener('pointerdown', event => { capture.pointerId = event.pointerId; }, { once: true });
+    surface.addEventListener('lostpointercapture', () => { capture.lost = true; }, { once: true });
+    Object.assign(globalThis, { qaCapture: capture });
+  });
+  const bounds = await window.getByTestId('drawing-surface').boundingBox();
+  if (!bounds) throw new Error('Writing surface has no bounds');
+  const scale = bounds.width / 794;
+  const at = (x: number, y: number) => ({ x: bounds.x + x * scale, y: bounds.y + y * scale });
+  await writingPointer.move(at(100, 180).x, at(100, 180).y);
+  await writingPointer.down();
+  await writingPointer.move(at(240, 200).x, at(240, 200).y, { steps: 8 });
+  await window.evaluate(() => {
+    const capture = (globalThis as typeof globalThis & { qaCapture: { pointerId: number } }).qaCapture;
+    const surface = document.querySelector<HTMLCanvasElement>('[data-testid=drawing-surface]')!;
+    if (!surface.hasPointerCapture(capture.pointerId)) throw new Error('The pen never acquired native pointer capture');
+    surface.releasePointerCapture(capture.pointerId);
+  });
+  await writingPointer.move(at(240, 200).x, at(240, 200).y);
+  await expect.poll(() => window.evaluate(() => (globalThis as typeof globalThis & { qaCapture: { lost: boolean } }).qaCapture.lost)).toBe(true);
+  await writingPointer.up();
+  const kept = await saveNotebook('capture.clawdenote');
+  expect(kept.pages[0].items).toHaveLength(1);
+  const stroke = kept.pages[0].items[0] as StrokeItem;
+  expect(stroke.type).toBe('stroke');
+  expect(stroke.points.at(-1)!.x).toBeCloseTo(240, 0);
+  expect(stroke.points.at(-1)!.y).toBeCloseTo(200, 0);
+
+  await writingPointer.move(at(350, 180).x, at(350, 180).y);
+  await writingPointer.down();
+  await writingPointer.move(at(480, 200).x, at(480, 200).y, { steps: 8 });
+  await window.evaluate(() => {
+    const capture = (globalThis as typeof globalThis & { qaCapture: { pointerId: number } }).qaCapture;
+    document.querySelector('[data-testid=drawing-surface]')!.dispatchEvent(new PointerEvent('pointercancel', { pointerId: capture.pointerId, pointerType: 'pen', bubbles: true, buttons: 0, pressure: 0 }));
+  });
+  await writingPointer.up();
+  expect((await saveNotebook('capture.clawdenote')).pages[0].items).toEqual(kept.pages[0].items);
+  expect(pageErrors).toEqual([]);
+});
+
 test('existing PDF text is replaced in the exported document and survives notebook save', async () => {
   const fixture = await PDFDocument.create();
   const font = await fixture.embedFont(StandardFonts.Helvetica);
@@ -217,7 +290,7 @@ test('existing PDF text is replaced in the exported document and survives notebo
   // The PDF text is at 72 pt from the left and about 102 pt from the top.
   const bounds = await window.getByTestId('drawing-surface').boundingBox();
   if (!bounds) throw new Error('PDF drawing surface has no bounds');
-  await window.mouse.click(bounds.x + 105 / 595.28 * bounds.width, bounds.y + 97 / 595.28 * bounds.width);
+  await writingPointer.click(bounds.x + 105 / 595.28 * bounds.width, bounds.y + 97 / 595.28 * bounds.width);
   await window.getByLabel('Replacement text', { exact: true }).fill('Revised PDF text');
   await window.getByRole('button', { name: 'Apply replacement', exact: true }).click();
   await expect(window.getByLabel('Replacement text', { exact: true })).not.toBeVisible();
@@ -256,13 +329,132 @@ test('library autosave survives restart and normal close flushes a pending edit 
   await window.getByRole('button', { name: 'Save notebook', exact: true }).click();
   await expect(window.locator('.save-indicator')).toHaveText('Saved to your library');
   await dragOnPage({ x: 340, y: 180 }, { x: 470, y: 220 });
-  await expect(window.locator('.save-indicator')).toHaveText('Saving…');
+  await expect(window.locator('.save-indicator')).toHaveText('Unsaved changes');
   await closeApplicationNormally();
   await launchApplication(false);
   await openLibraryNotebook('Pending close saved');
   const restored = await saveNotebook('restored.clawdenote');
   expect(restored.pages[0].items).toHaveLength(2);
   expect(restored.pages[0].items[0]).toEqual(saved.pages[0].items[0]);
+  expect(pageErrors).toEqual([]);
+});
+
+test('autosave waits through active and continuous writing, then idle, Home, Save, and close preserve every stroke', async () => {
+  await window.getByLabel('Notebook name', { exact: true }).fill('Uninterrupted writing');
+  await window.getByRole('button', { name: 'Save notebook', exact: true }).click();
+  await expect(window.locator('.save-indicator')).toHaveText('Saved to your library');
+  const notesRoot = path.join(userDataDirectory, 'library', 'notes');
+  const directories = (await readdir(notesRoot, { withFileTypes: true })).filter(entry => entry.isDirectory());
+  expect(directories).toHaveLength(1);
+  const managedFile = path.join(notesRoot, directories[0].name, 'document.json');
+  const baseline = await readFile(managedFile, 'utf8');
+  const persisted = async () => JSON.parse(await readFile(managedFile, 'utf8')) as DocumentModel;
+  await window.evaluate(() => {
+    const activity = { encoding: 0, writing: true };
+    const encode = HTMLCanvasElement.prototype.toDataURL;
+    HTMLCanvasElement.prototype.toDataURL = function (...args: Parameters<typeof encode>) {
+      if (activity.writing) activity.encoding++;
+      return encode.apply(this, args);
+    };
+    Object.assign(globalThis, { qaWritingActivity: activity });
+  });
+  // Leave a committed edit pending before holding the next stroke.
+  await dragOnPage({ x: 100, y: 120 }, { x: 220, y: 140 });
+  const bounds = await window.getByTestId('drawing-surface').boundingBox();
+  if (!bounds) throw new Error('Writing surface has no bounds');
+  const scale = bounds.width / 794;
+  await writingPointer.move(bounds.x + 100 * scale, bounds.y + 180 * scale);
+  await writingPointer.down();
+  await writingPointer.move(bounds.x + 240 * scale, bounds.y + 200 * scale, { steps: 8 });
+  // Even a held pen that stops moving must not start a background save.
+  await window.waitForTimeout(4_500);
+  expect(await readFile(managedFile, 'utf8')).toBe(baseline);
+  expect(await window.evaluate(() => (globalThis as typeof globalThis & { qaWritingActivity: { encoding: number } }).qaWritingActivity.encoding)).toBe(0);
+  await writingPointer.up();
+  for (let index = 0; index < 3; index++) {
+    await dragOnPage({ x: 100, y: 250 + index * 55 }, { x: 250, y: 270 + index * 55 });
+    await window.waitForTimeout(1_500);
+    expect(await readFile(managedFile, 'utf8')).toBe(baseline);
+  }
+  expect(await window.evaluate(() => (globalThis as typeof globalThis & { qaWritingActivity: { encoding: number } }).qaWritingActivity.encoding)).toBe(0);
+  await window.evaluate(() => { (globalThis as typeof globalThis & { qaWritingActivity: { writing: boolean } }).qaWritingActivity.writing = false; });
+  await expect.poll(async () => (await persisted()).pages[0].items.length, { timeout: 9_000 }).toBe(5);
+  await expect(window.locator('.save-indicator')).toHaveText('Saved to your library');
+  const idleSaved = await persisted();
+
+  await dragOnPage({ x: 350, y: 180 }, { x: 480, y: 200 });
+  await goHome();
+  expect((await persisted()).pages[0].items).toHaveLength(6);
+  await openLibraryNotebook('Uninterrupted writing');
+  await dragOnPage({ x: 350, y: 250 }, { x: 480, y: 270 });
+  await window.getByRole('button', { name: 'Save notebook', exact: true }).click();
+  await expect(window.locator('.save-indicator')).toHaveText('Saved to your library', { timeout: 3_000 });
+  expect((await persisted()).pages[0].items).toHaveLength(7);
+  const closingBounds = await window.getByTestId('drawing-surface').boundingBox();
+  if (!closingBounds) throw new Error('Writing surface has no bounds');
+  const closingScale = closingBounds.width / 794;
+  await writingPointer.move(closingBounds.x + 350 * closingScale, closingBounds.y + 320 * closingScale);
+  await writingPointer.down();
+  await writingPointer.move(closingBounds.x + 480 * closingScale, closingBounds.y + 340 * closingScale, { steps: 8 });
+  // Closing the native window must finish and save this still-held stroke.
+  await closeApplicationNormally();
+  expect((await persisted()).pages[0].items).toHaveLength(8);
+  await launchApplication(false);
+  await openLibraryNotebook('Uninterrupted writing');
+  const reopened = await saveNotebook('uninterrupted.clawdenote');
+  expect(reopened.pages[0].items).toHaveLength(8);
+  expect(reopened.pages[0].items.slice(0, 5)).toEqual(idleSaved.pages[0].items);
+  const closingStroke = reopened.pages[0].items.at(-1)!;
+  expect(closingStroke.type).toBe('stroke');
+  if (closingStroke.type !== 'stroke') throw new Error('The held closing stroke was lost');
+  expect(closingStroke.points.at(-1)!.x).toBeCloseTo(480, 0);
+  expect(closingStroke.points.at(-1)!.y).toBeCloseTo(340, 0);
+  expect(pageErrors).toEqual([]);
+});
+
+test('narrow windows fit the writing page and remember independently collapsible panels', async ({}, testInfo) => {
+  await window.getByRole('button', { name: 'Hide pages', exact: true }).click();
+  await window.getByRole('button', { name: 'Hide tools', exact: true }).click();
+  let pagesToggle = window.locator('button[aria-controls="pages-panel"]');
+  let toolsToggle = window.locator('button[aria-controls="tools-panel"]');
+  await expect(pagesToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(toolsToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(window.locator('#pages-panel')).not.toBeVisible();
+  await expect(window.locator('#tools-panel')).not.toBeVisible();
+  for (const width of [720, 640, 560, 520]) {
+    await application.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 800), width);
+    await expect.poll(() => window.evaluate(() => innerWidth)).toBeLessThanOrEqual(width);
+    await window.getByRole('button', { name: 'Fit width', exact: true }).click();
+    await expect.poll(async () => window.evaluate(() => {
+      const canvas = document.querySelector('[data-testid=drawing-surface]')!.getBoundingClientRect();
+      return Math.max(document.documentElement.scrollWidth, document.body.scrollWidth, canvas.right) - innerWidth;
+    })).toBeLessThanOrEqual(2);
+    const pageBounds = await window.getByTestId('drawing-surface').boundingBox();
+    expect(pageBounds!.x).toBeGreaterThanOrEqual(0);
+    expect(pageBounds!.width).toBeGreaterThan(350);
+    if (width === 560 || width === 520) await window.screenshot({ path: testInfo.outputPath(`Clawdenote-narrow-${width}.png`) });
+  }
+  await window.getByRole('button', { name: 'Show pages', exact: true }).click();
+  await window.getByRole('button', { name: 'Show tools', exact: true }).click();
+  await expect(pagesToggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(toolsToggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(window.locator('#pages-panel')).toBeVisible();
+  await expect(window.locator('#tools-panel')).toBeVisible();
+  await window.getByRole('button', { name: 'Hide pages', exact: true }).click();
+  await goHome();
+  expect(await window.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - innerWidth)).toBeLessThanOrEqual(2);
+  await window.screenshot({ path: testInfo.outputPath('Clawdenote-home-narrow-520.png') });
+  await closeApplicationNormally();
+  await launchApplication(false);
+  await openLibraryNotebook('Untitled notebook');
+  pagesToggle = window.locator('button[aria-controls="pages-panel"]');
+  toolsToggle = window.locator('button[aria-controls="tools-panel"]');
+  await expect(pagesToggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(toolsToggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(window.locator('#pages-panel')).not.toBeVisible();
+  await expect(window.locator('#tools-panel')).toBeVisible();
+  await window.getByRole('button', { name: 'Show pages', exact: true }).click();
+  await expect(pagesToggle).toHaveAttribute('aria-expanded', 'true');
   expect(pageErrors).toEqual([]);
 });
 
@@ -366,7 +558,7 @@ test('round area erasing and lasso group movement preserve untouched ink and und
   if (!bounds) throw new Error('Writing surface has no bounds');
   const scale = bounds.width / 794;
   const at = (x: number, y: number) => ({ x: bounds.x + x * scale, y: bounds.y + y * scale });
-  await window.mouse.move(at(300, 190).x, at(300, 190).y);
+  await writingPointer.move(at(300, 190).x, at(300, 190).y);
   const indicator = window.getByTestId('eraser-indicator');
   await expect(indicator).toBeVisible();
   const brush = await indicator.evaluate(element => {
@@ -376,9 +568,9 @@ test('round area erasing and lasso group movement preserve untouched ink and und
   expect(brush.width).toBeGreaterThan(0);
   expect(Math.abs(brush.width - brush.height)).toBeLessThan(1);
   expect(brush.borderRadius).toBe('50%');
-  await window.mouse.down();
-  await window.mouse.move(at(300, 210).x, at(300, 210).y, { steps: 8 });
-  await window.mouse.up();
+  await writingPointer.down();
+  await writingPointer.move(at(300, 210).x, at(300, 210).y, { steps: 8 });
+  await writingPointer.up();
   const erased = await saveNotebook('lasso.clawdenote');
   const fragments = erased.pages[0].items.filter((item): item is StrokeItem => item.type === 'stroke');
   expect(fragments).toHaveLength(2);
@@ -387,7 +579,7 @@ test('round area erasing and lasso group movement preserve untouched ink and und
   expect(fragments.every(stroke => stroke.points.every(point => Math.abs(point.x - 300) > 4))).toBe(true);
   const dismissNotification = window.getByRole('button', { name: 'Dismiss notification', exact: true });
   if (await dismissNotification.isVisible()) await dismissNotification.click();
-  await window.mouse.move(at(300, 200).x, at(300, 200).y);
+  await writingPointer.move(at(300, 200).x, at(300, 200).y);
   await expect(indicator).toBeVisible();
   await window.screenshot({ path: testInfo.outputPath('Clawdenote-round-eraser.png') });
   await window.getByRole('button', { name: 'Undo', exact: true }).click();
@@ -405,16 +597,16 @@ test('round area erasing and lasso group movement preserve untouched ink and und
   }));
   async function selectPartialStroke() {
     await window.getByRole('button', { name: 'Lasso select', exact: true }).click();
-    await window.mouse.move(at(circle[0].x, circle[0].y).x, at(circle[0].x, circle[0].y).y);
-    await window.mouse.down();
-    for (const point of circle.slice(1)) await window.mouse.move(at(point.x, point.y).x, at(point.x, point.y).y);
-    await window.mouse.up();
+    await writingPointer.move(at(circle[0].x, circle[0].y).x, at(circle[0].x, circle[0].y).y);
+    await writingPointer.down();
+    for (const point of circle.slice(1)) await writingPointer.move(at(point.x, point.y).x, at(point.x, point.y).y);
+    await writingPointer.up();
   }
   await selectPartialStroke();
-  await window.mouse.move(at(300, 250).x, at(300, 250).y);
-  await window.mouse.down();
-  await window.mouse.move(at(420, 330).x, at(420, 330).y, { steps: 8 });
-  await window.mouse.up();
+  await writingPointer.move(at(300, 250).x, at(300, 250).y);
+  await writingPointer.down();
+  await writingPointer.move(at(420, 330).x, at(420, 330).y, { steps: 8 });
+  await writingPointer.up();
   const moved = await saveNotebook('lasso.clawdenote');
   const movedStrokes = moved.pages[0].items.filter((item): item is StrokeItem => item.type === 'stroke');
   expect(movedStrokes.length).toBeGreaterThan(4);
@@ -469,22 +661,22 @@ test('ink smoothing reduces visible jitter, survives export, and preserves pen l
     x: 90 + index * 8,
     y: 230 + Math.sin(index * 0.17) * 32 + (index % 2 === 0 ? 5 : -5),
   }));
-  async function mouseSamples(yOffset = 0) {
+  async function penSamples(yOffset = 0) {
     const bounds = await window.getByTestId('drawing-surface').boundingBox();
     if (!bounds) throw new Error('Writing surface has no bounds');
     const scale = bounds.width / 794;
-    await window.mouse.move(bounds.x + samples[0].x * scale, bounds.y + (samples[0].y + yOffset) * scale);
-    await window.mouse.down();
+    await writingPointer.move(bounds.x + samples[0].x * scale, bounds.y + (samples[0].y + yOffset) * scale);
+    await writingPointer.down();
     await window.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     const paintsBefore = await window.evaluate(() => ({ ...(globalThis as typeof globalThis & { inkTestPaints: { committed: number; live: number } }).inkTestPaints }));
     for (const sample of samples.slice(1)) {
-      await window.mouse.move(bounds.x + sample.x * scale, bounds.y + (sample.y + yOffset) * scale);
+      await writingPointer.move(bounds.x + sample.x * scale, bounds.y + (sample.y + yOffset) * scale);
     }
     await window.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     const paintsAfter = await window.evaluate(() => ({ ...(globalThis as typeof globalThis & { inkTestPaints: { committed: number; live: number } }).inkTestPaints }));
     expect(paintsAfter.committed).toBe(paintsBefore.committed);
     expect(paintsAfter.live).toBeGreaterThan(paintsBefore.live);
-    await window.mouse.up();
+    await writingPointer.up();
   }
   await window.evaluate(() => {
     const paints = { committed: 0, live: 0 };
@@ -503,11 +695,11 @@ test('ink smoothing reduces visible jitter, survives export, and preserves pen l
   await smoothing.focus();
   await smoothing.press('Home');
   await expect(smoothing).toHaveValue('0');
-  await mouseSamples();
+  await penSamples();
   await smoothing.focus();
   await smoothing.press('End');
   await expect(smoothing).toHaveValue('100');
-  await mouseSamples(170);
+  await penSamples(170);
 
   // Trusted Chromium pen events exercise pressure and capture, without claiming hardware coverage.
   await window.getByLabel('Pen only / palm rejection', { exact: true }).check();
@@ -631,7 +823,7 @@ test('ink smoothing reduces visible jitter, survives export, and preserves pen l
   if (!selectedBounds) throw new Error('Writing surface has no bounds');
   const selectedScale = selectedBounds.width / 794;
   const pickedPoint = original.points[20];
-  await window.mouse.click(selectedBounds.x + pickedPoint.x * selectedScale, selectedBounds.y + pickedPoint.y * selectedScale);
+  await writingPointer.click(selectedBounds.x + pickedPoint.x * selectedScale, selectedBounds.y + pickedPoint.y * selectedScale);
   await expect(smoothing).toHaveValue('0');
   await smoothing.focus();
   await smoothing.press('End');
@@ -679,8 +871,8 @@ test('images finishing decode repaint the cached page while writing', async () =
   const bounds = await window.getByTestId('drawing-surface').boundingBox();
   if (!bounds) throw new Error('Writing surface has no bounds');
   const scale = bounds.width / 794;
-  await window.mouse.move(bounds.x + 320 * scale, bounds.y + 210 * scale);
-  await window.mouse.down();
+  await writingPointer.move(bounds.x + 320 * scale, bounds.y + 210 * scale);
+  await writingPointer.down();
   const imagePixel = () => window.evaluate(() => {
     const canvas = document.querySelector<HTMLCanvasElement>('canvas.committed-ink')!;
     const scale = canvas.width / 794;
@@ -689,6 +881,7 @@ test('images finishing decode repaint the cached page while writing', async () =
   expect((await imagePixel())[3]).toBe(0);
   await window.evaluate(() => (globalThis as typeof globalThis & { releaseInkImages: () => void }).releaseInkImages());
   await expect.poll(imagePixel).toEqual([255, 0, 0, 255]);
-  await window.mouse.up();
+  await writingPointer.up();
   expect(pageErrors).toEqual([]);
 });
+
