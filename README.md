@@ -6,7 +6,7 @@ A local Windows notebook for handwriting, drawing, and editing PDFs. No account 
 
 ## Install
 
-Download `Clawdenote-Setup-1.1.0.exe` from the [latest release](https://github.com/Ruibuckets/Clawdenote/releases/latest), run it, and choose an installation folder. Launch Clawdenote from the desktop or Start menu shortcut. The installer is for Windows x64.
+Download `Clawdenote-Setup-1.2.0.exe` from the [latest release](https://github.com/Ruibuckets/Clawdenote/releases/latest), run it, and choose an installation folder. Launch Clawdenote from the desktop or Start menu shortcut. The installer is for Windows x64.
 
 The installer is unsigned, so Windows may display an unknown-publisher or SmartScreen prompt.
 
@@ -17,6 +17,7 @@ The installer is unsigned, so Windows may display an unknown-publisher or SmartS
 - Blank, lined, graph, and dotted A4 paper with white, cream, or pale green tones.
 - Pen and highlighter with preset or custom colours, adjustable width, compatible pen pressure, and adjustable ink smoothing.
 - A small writing-cursor dot that follows the selected ink colour.
+- Collapsible page and settings panels, compact controls, and page-width fitting for narrow windows.
 - Adjustable round eraser, lasso selection and group movement, undo/redo, pan, lines, arrows, rectangles, and ellipses.
 - Typed notes and local image insertion.
 - Add, duplicate, reorder, and delete pages; append PDF pages to a notebook.
@@ -33,7 +34,9 @@ Choose the paper style in the right panel, then pick a tool, colour, and width. 
 
 Start with **Ink smoothing** at **55%** for steadier handwriting. Increase it to soften jitter, or lower it to preserve sharper corners and small letters. **0%** turns smoothing off. To improve an existing stroke, choose **Select & move**, click the stroke, and adjust its smoothing. Undo can restore the previous setting.
 
-Edits save automatically to your local library. **Save** saves pending edits immediately; **Home** and normal app closing also finish saving. **Save a copy** writes an editable `.clawdenote` file to your chosen folder for backup or use on another computer. **Export** saves all pages to PDF, or the current page to PNG, JPEG, or SVG. Working notebooks from the older recovery system are imported into the library automatically.
+Edits save automatically to your local library after you pause writing. Saving and preview creation wait while a stroke is active. **Save** saves pending edits immediately; **Home** and normal app closing also finish saving. **Save a copy** writes an editable `.clawdenote` file to your chosen folder for backup or use on another computer. **Export** saves all pages to PDF, or the current page to PNG, JPEG, or SVG. Working notebooks from the older recovery system are imported into the library automatically.
+
+Collapse the page and settings panels to give the paper more room beside another app. **Fit width** fits the page to the available writing area; **Fit page** shows the whole sheet. Panel choices are remembered when you reopen Clawdenote.
 
 Choose **Lasso select**, draw around the ink you want, then drag the selection to move it. A lasso can move part of a stroke while leaving the rest in place. The round **Eraser** removes ink under its brush; adjust **Eraser size** separately from pen width. Press **E** to switch between the eraser and your previous pen or highlighter. Undo restores an eraser gesture or a lasso move in one step.
 
@@ -51,7 +54,7 @@ For existing PDF text, choose **Edit PDF text**, click an outlined line, enter t
 
 ## Practical limits
 
-- Physical pen/tablet hardware has not been tested. Pressure and pen-only touch filtering depend on compatible Windows Ink input and your device driver. Mouse drawing and the notebook/PDF workflows have been tested in Electron.
+- Physical pen/tablet hardware has not been tested. Pressure and pen-only touch filtering depend on compatible Windows Ink input and your device driver. Automated Electron tests cover mouse input, simulated pen input, and notebook/PDF workflows.
 - Scanned PDFs have no selectable text layer; OCR is not included. Rotated or vertical text cannot be replaced. Edit one horizontal line at a time; longer replacements may shrink to fit, and font appearance can change.
 - Password-protected PDFs need an unlocked copy. PDF editing restrictions are respected.
 - SVG exports embed imported PDF backgrounds as images; PDF exports preserve searchable text. Check exported pages before sharing them.
